@@ -3,13 +3,13 @@ const { spawn } = require('child_process');
 
 const PORT = process.env.PORT || 5900;
 
-// Initialize WebSocket server directly on the port
+// Initialize WebSocket server directly on the environment port
 const wss = new WebSocketServer({ port: PORT });
 
 // Hook into the internal HTTP server for the POST /api/exec route
 if (wss._server) {
   wss._server.on('request', (req, res) => {
-    const url = new URL(req.url, `http://${req.headers.host}`);
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
     if (req.method === 'POST' && url.pathname === '/api/exec') {
       let body = '';
@@ -18,9 +18,16 @@ if (wss._server) {
         body += chunk;
       });
 
+      req.on('error', (err) => {
+        console.error('[HTTP] Request stream error:', err);
+      });
+
       req.on('end', () => {
+        // Prevent writing headers if response was already closed or sent
+        if (res.headersSent) return;
+
         try {
-          const payload = JSON.parse(body);
+          const payload = JSON.parse(body || '{}');
           const commandToRun = payload.command || 'echo "No command provided"';
 
           console.log(`\n[EXEC] Triggered command: ${commandToRun}`);
@@ -72,20 +79,26 @@ if (wss._server) {
             });
           });
 
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ 
-            success: true, 
-            message: 'Command spawned and logs streaming', 
-            command: commandToRun 
-          }));
+          if (!res.headersSent) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ 
+              success: true, 
+              message: 'Command spawned and logs streaming', 
+              command: commandToRun 
+            }));
+          }
         } catch (err) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ success: false, error: 'Invalid JSON payload' }));
+          if (!res.headersSent) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: 'Invalid JSON payload' }));
+          }
         }
       });
     } else {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('Not Found');
+      if (!res.headersSent) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Not Found');
+      }
     }
   });
 }
@@ -94,7 +107,7 @@ if (wss._server) {
 wss.on('connection', (ws, req) => {
   console.log(`Client connected from ${req.socket.remoteAddress}`);
 
-  ws.send(JSON.stringify({ message: `Connected to ws://localhost:${PORT}` }));
+  ws.send(JSON.stringify({ message: `Connected to WebSocket server` }));
 
   ws.on('message', (message) => {
     console.log(`Received from client: ${message}`);
@@ -105,6 +118,5 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-console.log(`WebSocket server running at ws://localhost:${PORT}`);
-console.log(`HTTP POST endpoint ready at http://localhost:${PORT}/api/exec`);
-
+console.log(`WebSocket server running on port ${PORT}`);
+console.log(`HTTP POST endpoint ready at /api/exec`);
